@@ -97,7 +97,7 @@ class LedLightHandler(Service):
                 new_rfid_entry = RfidModel({"rfid": rfid})
                 new_rfid_entry.save()
             else:
-                is_authorized = rfid_data.allow
+                is_authorized = rfid_data.enabled
                 is_expired = self.is_expired(rfid_data.valid_from, rfid_data.valid_until)
                 rfid_data.last_used_at = datetime.now()
                 rfid_data.save()
