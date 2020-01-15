@@ -9,6 +9,7 @@ from nl.carcharging.models.RfidModel import RfidModel
 from nl.carcharging.models.SessionModel import SessionModel
 from nl.carcharging.services.Buzzer import Buzzer
 from nl.carcharging.services.Charger import Charger
+from nl.carcharging.services.Evse import Evse
 from nl.carcharging.services.LedLighter import LedLighter
 from nl.carcharging.utils.GenericUtil import GenericUtil
 
@@ -54,13 +55,14 @@ class ExpiredException(Exception):
 class LedLightHandler(Service):
 
     @inject
-    def __init__(self, energy_util: EnergyUtil, charger: Charger, ledlighter: LedLighter, buzzer: Buzzer):
+    def __init__(self, energy_util: EnergyUtil, charger: Charger, ledlighter: LedLighter, buzzer: Buzzer, evse: Evse):
         super(LedLightHandler, self).__init__(PROCESS_NAME, pid_dir=PID_DIR)
 
         self.energy_util = energy_util
         self.charger = charger
         self.ledlighter = ledlighter
         self.buzzer = buzzer
+        self.evse = evse
         self.is_status_charging = False
 
     def run(self):
@@ -193,10 +195,10 @@ class LedLightHandler(Service):
 
     def update_charger_and_led(self, start_session):
         if start_session:
-            self.charger.start()
+            self.evse.switch_on()
             self.ledlighter.ready()
         else:
-            self.charger.stop()
+            self.evse.switch_off()
             self.ledlighter.available()
 
     def stop(self, block=False):
