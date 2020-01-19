@@ -4,6 +4,7 @@
 # 2015-12-08
 # Public Domain
 import enum
+import logging
 
 import RPi.GPIO as GPIO
 
@@ -119,6 +120,7 @@ if __name__ == "__main__":
 
     PROCESS_NAME = "EvseReader"
     Logger.init_log(PROCESS_NAME, "/tmp/%s.log" % PROCESS_NAME)
+    logger = logging.getLogger("nl.carcharging.utils.EvseReader")
 
     import time
     import pigpio
@@ -162,7 +164,7 @@ if __name__ == "__main__":
        this triggers ERROR state. Place a filter on this.
    """
 
-    print(" Starting, state is {}".format(evse_state.name))
+    logger.info(" Starting, state is {}".format(evse_state.name))
     while (time.time() - start) < RUN_TIME:
 
         time.sleep(SAMPLE_TIME)
@@ -176,55 +178,58 @@ if __name__ == "__main__":
             continue  # next iteration
 
         if evse_dcf == evse_dcf_prev:
+            logger.debug("State seems stable")
             # possible state A (inactive), B (connected) or just a top/bottom  of a pulse
             # is this the first occurrance?
             if evse_changing is None or evse_changing is True:
-                # First time, was changing before
+                logger.debug("First time evse value is stable. First run or was charging")
                 evse_changing = False
                 evse_dcf_lastchange_timestamp_milliseconds = current_time_milliseconds()
             if evse_dcf_lastchange_timestamp_milliseconds is not None and (
                     (current_time_milliseconds() - evse_dcf_lastchange_timestamp_milliseconds) > EVSE_TIME_TO_SWITCH_EDGES):
+                logger.debug("Is stable for a while.")
                 # this condition has been a while, must be state A (inactive) or B (connected0
                 if evse_dcf >= EVSE_MINLEVEL_STATE_CONNECTED:
+                    logger.debug("Evse is connected (charging?)")
                     # State B (Connected)
                     evse_rising = False
                     evse_rising_since = None
                     evse_state = EvseState.EVSE_STATE_CONNECTED
                 else:
+                    logger.debug("Evse is inactive (not charging?)")
                     # State A (Inactive)
-                    evse_state =  EvseState.EVSE_STATE_INACTIVE
+                    evse_state = EvseState.EVSE_STATE_INACTIVE
 
-        if evse_dcf != evse_dcf_prev:
-            # Changing
+        else:
+            logger.debug("Value is changing")
             if evse_dcf > evse_dcf_prev:
-                # rising
+                logger.debug("Value is rising")
                 if evse_rising is None:  # starting up
+                    logger.debug("Starting up")
                     evse_rising = True
                     evse_rising_since = current_time_milliseconds()
                 else:
-                    if not evse_rising:  # switching from falling
+                    logger.debug("Switching from falling")
+                    if not evse_rising:
                         if evse_rising_since is not None:
                             # switching to rising, quickly? (can this be ERROR?)
                             if (evse_rising_since is not None and (
                                     (current_time_milliseconds() - evse_rising_since) < EVSE_TIME_TO_PULSE)):
-                                # ERROR
-                                if evse_state !=  EvseState.EVSE_STATE_ERROR:
-                                    # Changing to ERROR
-                                    evse_state =  EvseState.EVSE_STATE_ERROR
+                                logger.debug("ERROR situation, rising too fast")
+                                evse_state =  EvseState.EVSE_STATE_ERROR
                         evse_rising = True
                         evse_rising_since = current_time_milliseconds()
-                    else:  # continue rising
+                    else:
+                        logger.debug("Continue rising")
                         if (evse_rising_since is not None and (
                                 (current_time_milliseconds() - evse_rising_since) >= EVSE_TIME_TO_PULSE)):
-                            # Pulse state (Charging)
-                            if evse_state !=  EvseState.EVSE_STATE_CHARGING:
-                                evse_state =  EvseState.EVSE_STATE_CHARGING
-                                # Changing to Charging
+                            logger.debug("Evse is charging (value is rising)")
+                            evse_state = EvseState.EVSE_STATE_CHARGING
             else:
-                # falling
+                logger.debug("Value is falling")
                 if evse_rising_since is not None and (
                         (current_time_milliseconds() - evse_rising_since) >= EVSE_TIME_TO_PULSE):
-                    # Pulse state (Charging)
+                    logger.debug("Evse is charging (value dropping)")
                     evse_state = EvseState.EVSE_STATE_CHARGING
 
                 evse_rising = False
