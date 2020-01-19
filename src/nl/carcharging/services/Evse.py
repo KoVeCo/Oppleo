@@ -21,11 +21,13 @@ class EvseProd(object):
 
 
     def switch_on(self):
+        self.logger.debug("Product evse on")
         # Setting the output to LOW enables the charging. Keep low.
         GPIO.output(switch_pin, GPIO.LOW)
 
 
     def switch_off(self):
+        self.logger.debug("Product Evse off")
         # Setting the output to HIGH disables the charging. Keep high.
         GPIO.output(switch_pin, GPIO.HIGH)
 
