@@ -32,7 +32,6 @@ class EvseProd(object):
         GPIO.output(switch_pin, GPIO.HIGH)
 
 
-
 class EvseDev(object):
     logger = logging.getLogger('nl.carcharging.services.EvseDev')
 
