@@ -6,7 +6,7 @@ from datetime import datetime
 
 from nl.carcharging.models.EnergyDeviceMeasureModel import EnergyDeviceMeasureModel
 from nl.carcharging.models.RfidModel import RfidModel
-from nl.carcharging.models.SessionModel import SessionModel
+from nl.carcharging.models.ChargeSessionModel import ChargeSessionModel
 from nl.carcharging.services.Buzzer import Buzzer
 from nl.carcharging.services.Charger import Charger
 from nl.carcharging.services.Evse import Evse
@@ -124,7 +124,7 @@ class LedLightHandler(Service):
 
     def resume_session_if_applicable(self, device):
         # Check if there was a session active when this daemon was stopped.
-        last_saved_session = SessionModel.get_latest_rfid_session(device)
+        last_saved_session = ChargeSessionModel.get_latest_charge_session(device)
 
         if last_saved_session and last_saved_session.end_value is None:
             self.logger.info("After startup continuing an active session for rfid %s" % last_saved_session.rfid)
@@ -160,7 +160,7 @@ class LedLightHandler(Service):
         rfid, text = reader.read()
         self.logger.debug("Rfid id and text: %d - %s" % (rfid, text))
 
-        rfid_latest_session = SessionModel.get_latest_rfid_session(device, rfid)
+        rfid_latest_session = ChargeSessionModel.get_latest_rfid_session(device, rfid)
 
         start_session = False
         data_for_session = {"rfid": rfid, "energy_device_id": device}
@@ -176,14 +176,14 @@ class LedLightHandler(Service):
             self.buzz_ok()
 
             # If there is an open session for another rfid, raise error.
-            last_saved_session = SessionModel.get_latest_rfid_session(device)
+            last_saved_session = ChargeSessionModel.get_latest_rfid_session(device)
             if self.is_other_pending_session(last_saved_session, rfid):
                 raise OtherRfidHasOpenSessionException(
                     "Rfid %s was offered but rfid %s has an open session" % (rfid, last_saved_session.rfid))
 
             self.logger.debug("Starting new charging session for rfid %s" % rfid)
             data_for_session['start_value'] = self.energy_util.getMeasurementValue(device).get('kw_total')
-            session = SessionModel()
+            session = ChargeSessionModel()
             session.set(data_for_session)
             session.save()
             start_session = True
