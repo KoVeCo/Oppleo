@@ -102,6 +102,7 @@ class EvseReader:
       """
         self._cb.cancel()
 
+
 class EvseState(enum.Enum):
     EVSE_STATE_UNKNOWN = 0  # Initial
     EVSE_STATE_INACTIVE = 1  # SmartEVSE State A: LED ON dimmed. Contactor OFF. Inactive
@@ -109,11 +110,36 @@ class EvseState(enum.Enum):
     EVSE_STATE_CHARGING = 3  # SmartEVSE State C: charging (pulsing)
     EVSE_STATE_ERROR = 4  # SmartEVSE State ?: ERROR (quick pulse)
 
+
 EVSE_MINLEVEL_STATE_CONNECTED = 8  # A dc lower than this indicates state A, higher state B
+
+EVSE_TIME_TO_SWITCH_EDGES = 500  # Time a dcf can be steady while pulsing in ms
+EVSE_TIME_TO_PULSE = 500  # Min time between rising edges to be pulsing. Faster is ERROR
 
 
 def current_time_milliseconds():
     return time.time() * 1000
+
+
+def is_current_measurement_over_edge_cycle(evse_measurement_milliseconds):
+    '''
+    Is time between evse_dcf_lastchange_timestamp_milliseconds and now greater than the time the evse needs
+    to pulse.
+    :param evse_measurement_milliseconds:
+    :return: True means that if evse is pulsing, values should have changed by now
+    '''
+    return evse_measurement_milliseconds is not None and (
+            (current_time_milliseconds() - evse_measurement_milliseconds) > EVSE_TIME_TO_SWITCH_EDGES)
+
+
+def is_current_measurement_interval_normal_pulse(evse_measurement_milliseconds):
+    '''
+    Is time between evse_measurement_milliseconds the normal time the evse needs to pulse.
+    :param evse_measurement_milliseconds:
+    :return:
+    '''
+    return (evse_measurement_milliseconds is not None and (
+            (current_time_milliseconds() - evse_measurement_milliseconds) >= EVSE_TIME_TO_PULSE))
 
 
 if __name__ == "__main__":
@@ -124,7 +150,6 @@ if __name__ == "__main__":
 
     import time
     import pigpio
-
 
     #   import read_PWM
 
@@ -149,9 +174,6 @@ if __name__ == "__main__":
     evse_dcf_lastchange_timestamp_milliseconds = None
 
     evse_state = EvseState.EVSE_STATE_UNKNOWN  # active state INACTIVE | CONNECTED | CHARGING | ERROR
-
-    EVSE_TIME_TO_SWITCH_EDGES = 500  # Time a dcf can be steady while pulsing in ms
-    EVSE_TIME_TO_PULSE = 500  # Min time between rising edges to be pulsing. Faster is ERROR
 
     """
      if the Duty Cycle is changing, assume it is charging
@@ -180,13 +202,12 @@ if __name__ == "__main__":
         if evse_dcf == evse_dcf_prev:
             logger.debug("State seems stable")
             # possible state A (inactive), B (connected) or just a top/bottom  of a pulse
-            # is this the first occurrance?
-            if evse_changing is None or evse_changing is True:
-                logger.debug("First time evse value is stable. First run or was charging")
-                evse_changing = False
+            # evse_dcf_lastchange_timestamp_milliseconds is not set if this while just started and values are stable.
+            if evse_dcf_lastchange_timestamp_milliseconds is None:
+                logger.debug("First run and evse value is stable.")
                 evse_dcf_lastchange_timestamp_milliseconds = current_time_milliseconds()
-            if evse_dcf_lastchange_timestamp_milliseconds is not None and (
-                    (current_time_milliseconds() - evse_dcf_lastchange_timestamp_milliseconds) > EVSE_TIME_TO_SWITCH_EDGES):
+
+            if is_current_measurement_over_edge_cycle(evse_dcf_lastchange_timestamp_milliseconds):
                 logger.debug("Is stable for a while.")
                 # this condition has been a while, must be state A (inactive) or B (connected0
                 if evse_dcf >= EVSE_MINLEVEL_STATE_CONNECTED:
@@ -213,22 +234,19 @@ if __name__ == "__main__":
                     if not evse_rising:
                         if evse_rising_since is not None:
                             # switching to rising, quickly? (can this be ERROR?)
-                            if (evse_rising_since is not None and (
-                                    (current_time_milliseconds() - evse_rising_since) < EVSE_TIME_TO_PULSE)):
+                            if not is_current_measurement_interval_normal_pulse(evse_rising_since):
                                 logger.debug("ERROR situation, rising too fast")
-                                evse_state =  EvseState.EVSE_STATE_ERROR
+                                evse_state = EvseState.EVSE_STATE_ERROR
                         evse_rising = True
                         evse_rising_since = current_time_milliseconds()
                     else:
                         logger.debug("Continue rising")
-                        if (evse_rising_since is not None and (
-                                (current_time_milliseconds() - evse_rising_since) >= EVSE_TIME_TO_PULSE)):
+                        if is_current_measurement_interval_normal_pulse(evse_rising_since):
                             logger.debug("Evse is charging (value is rising)")
                             evse_state = EvseState.EVSE_STATE_CHARGING
             else:
                 logger.debug("Value is falling")
-                if evse_rising_since is not None and (
-                        (current_time_milliseconds() - evse_rising_since) >= EVSE_TIME_TO_PULSE):
+                if is_current_measurement_interval_normal_pulse(evse_rising_since):
                     logger.debug("Evse is charging (value dropping)")
                     evse_state = EvseState.EVSE_STATE_CHARGING
 
