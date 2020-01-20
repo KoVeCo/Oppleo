@@ -230,8 +230,8 @@ if __name__ == "__main__":
                     evse_rising = True
                     evse_rising_since = current_time_milliseconds()
                 else:
-                    logger.debug("Switching from falling")
                     if not evse_rising:
+                        logger.debug("Switching from falling")
                         if evse_rising_since is not None:
                             # switching to rising, quickly? (can this be ERROR?)
                             if not is_current_measurement_interval_normal_pulse(evse_rising_since):
