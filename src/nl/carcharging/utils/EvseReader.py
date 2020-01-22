@@ -96,26 +96,24 @@ class EvseReader:
         else:
             return 0.0
 
+    def evse_value(self):
+        '''
+        Returns the duty_cycle_percentage but 1-100 is mapped to 1-10
+        :return: duty-cycle_percentage/10 (int)
+        '''
+        return round(self.duty_cycle_percentage() / 10)
+
     def cancel(self):
         """
       Cancels the reader and releases resources.
       """
         self._cb.cancel()
 
+
 class EvseDirection(enum.Enum):
     UP = 1
     DOWN = -1
-    NEUTRAL = 0
-
-def determine_evse_direction(delta):
-    delta_int = round(delta)
-    if delta_int > 0:
-        return EvseDirection.UP
-
-    if delta_int < 0:
-        return EvseDirection.DOWN
-    else:
-        return EvseDirection.NEUTRAL
+    NONE = 0
 
 
 class EvseState(enum.Enum):
@@ -128,7 +126,6 @@ class EvseState(enum.Enum):
 
 EVSE_MINLEVEL_STATE_CONNECTED = 8  # A dc lower than this indicates state A, higher state B
 
-EVSE_TIME_TO_SWITCH_EDGES = 500  # Time a dcf can be steady while pulsing in ms
 EVSE_TIME_TO_PULSE = 500  # Min time between rising edges to be pulsing. Faster is ERROR
 
 
@@ -136,33 +133,32 @@ def current_time_milliseconds():
     return time.time() * 1000
 
 
-def is_current_measurement_over_edge_cycle(evse_measurement_milliseconds):
-    '''
-    Is time between evse_dcf_lastchange_timestamp_milliseconds and now greater than the time the evse needs
-    to pulse.
-    :param evse_measurement_milliseconds:
-    :return: True means that if evse is pulsing, values should have changed by now
-    '''
+def determine_evse_direction(delta):
+    delta_int = round(delta)
 
-    delta = current_time_milliseconds() - evse_measurement_milliseconds
-    logger.debug('Over edge cycle? interval of change is calculated: %f' % delta)
+    direction = EvseDirection.NONE
+    if delta_int > 0:
+        direction = EvseDirection.UP
+    elif delta_int < 0:
+        direction = EvseDirection.DOWN
 
-    return evse_measurement_milliseconds is not None and (delta > EVSE_TIME_TO_SWITCH_EDGES)
+    return direction
 
 
 def is_current_measurement_interval_normal_pulse(evse_measurement_milliseconds):
     '''
-    Is time between evse_measurement_milliseconds the normal time the evse needs to pulse.
+    Is duration since evse_measurement_milliseconds the normal time the evse needs to pulse.
     :param evse_measurement_milliseconds:
     :return:
     '''
     delta = current_time_milliseconds() - evse_measurement_milliseconds
     logger.debug('Normal pulse cycle? interval of change is calculated: %f' % delta)
-    return (evse_measurement_milliseconds is not None and (delta >= EVSE_TIME_TO_PULSE))
+    return evse_measurement_milliseconds is not None and (delta >= EVSE_TIME_TO_PULSE)
 
 
-def is_pulse_direction_changed(evse_direction, evse_direction_previous):
-    return evse_direction != evse_direction_previous
+def is_pulse_direction_changed(direction_current, direction_previous):
+    return direction_current != direction_previous
+
 
 if __name__ == "__main__":
 
@@ -188,14 +184,6 @@ if __name__ == "__main__":
 
     start = time.time()
 
-    # -- Duty Cycle filtered
-    evse_dcf_prev = None
-    evse_changing = None
-    evse_rising = None
-    evse_rising_since = None
-    evse_stable_since = None
-    evse_dcf_lastchange_timestamp_milliseconds = None
-
     evse_state = EvseState.EVSE_STATE_UNKNOWN  # active state INACTIVE | CONNECTED | CHARGING | ERROR
 
     """
@@ -209,56 +197,64 @@ if __name__ == "__main__":
        this triggers ERROR state. Place a filter on this.
    """
 
+    # Overall direction of the measured pulse. If current measure is equal to previous measure (EvseDirection.NONE)
+    # the overall direction stays the direction before the direction became NONE. So when the measured value changes
+    # we can see if it continues the UP or DOWN or switches. Duration of the direction (evse_direction_change_moment)
+    # is input for us to determine if evse is charging or in error (pulses faster).
     evse_direction_overall = None
+    # Direction of the pulse when we saw the direction of pulse switched (the new direction)
+    # so together with the evse_direction_overall (current direction, ignoring EvseDirection.NONE measures)
+    # we can see if the direction switched (and hence means evse is charging or in error).
     evse_direction_overall_previous = None
+    # Current direction of pulse. UP, DOWN or NONE.
     evse_direction_current = None
+    # Contains the moment the direction_overall changes from UP to DOWN or vv.
     evse_direction_change_moment = current_time_milliseconds()
-    evse_dcf_lastchange_timestamp_milliseconds = current_time_milliseconds()
+    # Timestamp since the evse values didn't change anymore (if applicable, otherwise None)
+    evse_stable_since = None
 
+    # Current and previous evse measure. To know if direction of pulse is UP, DOWN or NONE
+    evse_dcf = None
+    evse_dcf_prev = None
 
     logger.info(" Starting, state is {}".format(evse_state.name))
     while (time.time() - start) < RUN_TIME:
 
         time.sleep(SAMPLE_TIME)
 
-        dc_percentage = evse_reader.duty_cycle_percentage()
-        evse_dcf = round(dc_percentage / 10)  # duty cycle filtered [0-10]
+        evse_dcf = evse_reader.evse_value()
 
-        # first run
+        # First run?
         if evse_dcf_prev is None:
             evse_dcf_prev = evse_dcf
             continue  # next iteration
 
         evse_direction_current = determine_evse_direction(evse_dcf - evse_dcf_prev)
-        if evse_direction_current != EvseDirection.NEUTRAL:
+        if evse_direction_current != EvseDirection.NONE:
             evse_direction_overall = evse_direction_current
 
-
         logger.debug('evse_current and prev %f vs %f' % (evse_dcf, evse_dcf_prev))
-        if evse_direction_current == EvseDirection.NEUTRAL:
-            logger.debug('Direction is neutral. Overall direction %s.' % evse_direction_overall.name if evse_direction_overall else '<null>')
+        if evse_direction_current == EvseDirection.NONE:
+            logger.debug(
+                'Direction is neutral. Overall direction %s.' % evse_direction_overall.name if evse_direction_overall else '<null>')
             if evse_stable_since is None:
                 evse_stable_since = current_time_milliseconds()
 
-            if is_current_measurement_over_edge_cycle(evse_stable_since):
-                logger.debug('Evse dutycycle not changed: %s' % evse_direction_current)
+            if is_current_measurement_interval_normal_pulse(evse_stable_since):
+                logger.debug('In the time-span a pulse would change direction, the evse value did not change')
                 if evse_dcf >= EVSE_MINLEVEL_STATE_CONNECTED:
                     logger.debug("Evse is connected (not charging)")
-                    # State B (Connected)
-                    evse_rising = False
-                    evse_rising_since = None
                     evse_state = EvseState.EVSE_STATE_CONNECTED
                 else:
                     logger.debug("Evse is inactive (not charging)")
                     # State A (Inactive)
                     evse_state = EvseState.EVSE_STATE_INACTIVE
-
-
         else:
+            # Evse measure changed
             evse_stable_since = None
             if is_pulse_direction_changed(evse_direction_overall, evse_direction_overall_previous):
-
-                logger.debug('Direction of evse dutycycle changed. Current direction overall: %s' % (evse_direction_overall.name))
+                logger.debug(
+                    'Direction of evse dutycycle changed. Current direction overall: %s' % evse_direction_overall.name)
                 if is_current_measurement_interval_normal_pulse(evse_direction_change_moment):
                     evse_state = EvseState.EVSE_STATE_CHARGING
                 else:
@@ -272,62 +268,6 @@ if __name__ == "__main__":
         evse_direction_previous = evse_direction_overall
         # Remember current duty cycle for next run
         evse_dcf_prev = evse_dcf
-
-
-        # if evse_dcf == evse_dcf_prev:
-        #     logger.debug("State seems stable")
-        #     # possible state A (inactive), B (connected) or just a top/bottom  of a pulse
-        #     # evse_dcf_lastchange_timestamp_milliseconds is not set if this while just started and values are stable.
-        #     if evse_dcf_lastchange_timestamp_milliseconds is None:
-        #         logger.debug("First run and evse value is stable.")
-        #         evse_dcf_lastchange_timestamp_milliseconds = current_time_milliseconds()
-        #
-        #     if is_current_measurement_over_edge_cycle(evse_dcf_lastchange_timestamp_milliseconds):
-        #         logger.debug("Is stable for a while.")
-        #         # this condition has been a while, must be state A (inactive) or B (connected0
-        #         if evse_dcf >= EVSE_MINLEVEL_STATE_CONNECTED:
-        #             logger.debug("Evse is connected (not charging)")
-        #             # State B (Connected)
-        #             evse_rising = False
-        #             evse_rising_since = None
-        #             evse_state = EvseState.EVSE_STATE_CONNECTED
-        #         else:
-        #             logger.debug("Evse is inactive (not charging)")
-        #             # State A (Inactive)
-        #             evse_state = EvseState.EVSE_STATE_INACTIVE
-        #
-        # else:
-        #     logger.debug("Value is changing")
-        #     if evse_dcf > evse_dcf_prev:
-        #         logger.debug("Value is rising")
-        #         if evse_rising is None:  # starting up
-        #             logger.debug("Starting up")
-        #             evse_rising = True
-        #             evse_rising_since = current_time_milliseconds()
-        #         else:
-        #             if not evse_rising:
-        #                 logger.debug("Switching from falling")
-        #                 if evse_rising_since is not None:
-        #                     # switching to rising, quickly? (can this be ERROR?)
-        #                     if not is_current_measurement_interval_normal_pulse(evse_rising_since):
-        #                         logger.debug("ERROR situation, rising too fast")
-        #                         evse_state = EvseState.EVSE_STATE_ERROR
-        #                 evse_rising = True
-        #                 evse_rising_since = current_time_milliseconds()
-        #             else:
-        #                 logger.debug("Continue rising")
-        #                 if is_current_measurement_interval_normal_pulse(evse_rising_since):
-        #                     logger.debug("Evse is charging (value is rising)")
-        #                     evse_state = EvseState.EVSE_STATE_CHARGING
-        #     else:
-        #         logger.debug("Value is falling")
-        #         if is_current_measurement_interval_normal_pulse(evse_rising_since):
-        #             logger.debug("Evse is charging (value dropping)")
-        #             evse_state = EvseState.EVSE_STATE_CHARGING
-        #
-        #         evse_rising = False
-        #     # dcf has changed
-        #     evse_dcf_lastchange_timestamp_milliseconds = current_time_milliseconds()
 
     evse_reader.cancel()
 
