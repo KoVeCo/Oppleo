@@ -164,7 +164,7 @@ class LedLightHandler(Service):
         rfid, text = reader.read()
         self.logger.debug("Rfid id and text: %d - %s" % (rfid, text))
 
-        rfid_latest_session = ChargeSessionModel.get_latest_rfid_session(device, rfid)
+        rfid_latest_session = ChargeSessionModel.get_latest_charge_session(device, rfid)
 
         start_session = False
         data_for_session = {"rfid": rfid, "energy_device_id": device}
@@ -180,7 +180,7 @@ class LedLightHandler(Service):
             self.buzz_ok()
 
             # If there is an open session for another rfid, raise error.
-            last_saved_session = ChargeSessionModel.get_latest_rfid_session(device)
+            last_saved_session = ChargeSessionModel.get_latest_charge_session(device)
             if self.is_other_pending_session(last_saved_session, rfid):
                 raise OtherRfidHasOpenSessionException(
                     "Rfid %s was offered but rfid %s has an open session" % (rfid, last_saved_session.rfid))
