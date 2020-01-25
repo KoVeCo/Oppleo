@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import threading
 import time
 from datetime import datetime
 
@@ -10,14 +11,10 @@ from nl.carcharging.models.ChargeSessionModel import ChargeSessionModel
 from nl.carcharging.services.Buzzer import Buzzer
 from nl.carcharging.services.Charger import Charger
 from nl.carcharging.services.Evse import Evse
+from nl.carcharging.services.EvseReader import EvseReader
+from nl.carcharging.services.EvseReaderProd import EvseState
 from nl.carcharging.services.LedLighter import LedLighter
 from nl.carcharging.utils.GenericUtil import GenericUtil
-
-try:
-    import RPi.GPIO as GPIO
-    from mfrc522 import SimpleMFRC522
-except RuntimeError:
-    logging.debug('Assuming dev env')
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from injector import inject, Injector
@@ -27,6 +24,10 @@ from nl.carcharging.config import Logger
 
 from nl.carcharging.services.RfidReader import RfidReader
 from nl.carcharging.utils.EnergyUtil import EnergyUtil
+
+GenericUtil.importGpio()
+GenericUtil.importMfrc522()
+
 
 PROCESS_NAME = 'rfid_reader'
 LOG_FILE = '/tmp/%s.log' % PROCESS_NAME
@@ -55,7 +56,8 @@ class ExpiredException(Exception):
 class LedLightHandler(Service):
 
     @inject
-    def __init__(self, energy_util: EnergyUtil, charger: Charger, ledlighter: LedLighter, buzzer: Buzzer, evse: Evse):
+    def __init__(self, energy_util: EnergyUtil, charger: Charger, ledlighter: LedLighter, buzzer: Buzzer, evse: Evse,
+                 evse_reader: EvseReader):
         super(LedLightHandler, self).__init__(PROCESS_NAME, pid_dir=PID_DIR)
 
         self.energy_util = energy_util
@@ -63,6 +65,7 @@ class LedLightHandler(Service):
         self.ledlighter = ledlighter
         self.buzzer = buzzer
         self.evse = evse
+        self.evse_reader = evse_reader
         self.is_status_charging = False
 
     def run(self):
@@ -70,12 +73,9 @@ class LedLightHandler(Service):
         device = GenericUtil.getMeasurementDevice()
 
         try:
-            scheduler.add_job(id="check_is_charging",
-                              func=self.try_handle_charging, args=[device],
-                              trigger="interval", seconds=10)
-            scheduler.start()
+            self.start_evse_reader_loop_in_thread()
         except Exception as ex:
-            self.logger.error("Could not start scheduler to check if charging is active: %s" % ex)
+            self.logger.error("Could not start service to check if charging is active: %s" % ex)
             self.ledlighter.error()
 
         try:
@@ -84,6 +84,11 @@ class LedLightHandler(Service):
             self.logger.error("Could not execute read_rfid_loop %s" % ex)
             self.buzz_error()
             self.ledlighter.error()
+
+    def start_evse_reader_loop_in_thread(self):
+        thread_for_evse_reader = threading.Thread(target=self.evse_reader.loop, name="Read evse state", args=(self.got_sigterm,
+                                                                                                              lambda evse_state: self.try_handle_charging(evse_state)))
+        thread_for_evse_reader.start()
 
     def authorize(self, rfid):
 
@@ -109,7 +114,6 @@ class LedLightHandler(Service):
         if is_expired:
             raise ExpiredException("Rfid isn't valid yet/anymore. Valid from %s to %s" %
                                    (rfid_data.valid_from, rfid_data.valid_until))
-
 
     def is_expired(self, from_date, until_date):
 
@@ -204,18 +208,18 @@ class LedLightHandler(Service):
     def stop(self, block=False):
         self.ledlighter.stop()
 
-    def try_handle_charging(self, device):
+    def try_handle_charging(self, evse_state):
         try:
-            self.handle_charging(device)
+            self.handle_charging(evse_state)
         except Exception as ex:
             self.logger.error("Error handle charging: %s", ex)
             self.ledlighter.error()
 
-    def handle_charging(self, device):
-        if self.is_car_charging(device):
+    def handle_charging(self, evse_state):
+        if evse_state == EvseState.EVSE_STATE_CHARGING:
             self.logger.debug("Device is currently charging")
+            self.is_status_charging = True
             if not self.ledlighter.is_charging_light_on():
-                self.is_status_charging = True
                 self.logger.debug('Start charging light pulse')
                 self.ledlighter.charging()
         else:

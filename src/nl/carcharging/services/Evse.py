@@ -2,11 +2,7 @@ import logging
 
 from nl.carcharging.utils.GenericUtil import GenericUtil
 
-try:
-    import RPi.GPIO as GPIO
-    GPIO.setwarnings(False)
-except RuntimeError:
-    logging.debug('Assuming dev env')
+GPIO = GenericUtil.importGpio()
 
 switch_pin = 5  # GPIO5 pin 29
 

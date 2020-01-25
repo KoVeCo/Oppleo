@@ -1,13 +1,5 @@
 #!/usr/bin/env python
 
-# evse_status based on read_PWM.py
-# 2015-12-08
-# Public Domain
-
-import time
-import pigpio # http://abyz.co.uk/rpi/pigpio/python.html
-import RPi.GPIO as g
-
 class reader:
     """
     A class to read PWM pulses and calculate their frequency
