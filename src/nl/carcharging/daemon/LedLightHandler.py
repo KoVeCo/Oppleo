@@ -5,25 +5,22 @@ import threading
 import time
 from datetime import datetime
 
-from nl.carcharging.models.EnergyDeviceMeasureModel import EnergyDeviceMeasureModel
-from nl.carcharging.models.RfidModel import RfidModel
+from apscheduler.schedulers.background import BackgroundScheduler
+from injector import inject, Injector
+from service import Service
+
+from nl.carcharging.config import Logger
 from nl.carcharging.models.ChargeSessionModel import ChargeSessionModel
+from nl.carcharging.models.RfidModel import RfidModel
 from nl.carcharging.services.Buzzer import Buzzer
 from nl.carcharging.services.Charger import Charger
 from nl.carcharging.services.Evse import Evse
 from nl.carcharging.services.EvseReader import EvseReader
 from nl.carcharging.services.EvseReaderProd import EvseState
 from nl.carcharging.services.LedLighter import LedLighter
-from nl.carcharging.utils.GenericUtil import GenericUtil
-
-from apscheduler.schedulers.background import BackgroundScheduler
-from injector import inject, Injector
-from service import Service
-
-from nl.carcharging.config import Logger
-
 from nl.carcharging.services.RfidReader import RfidReader
 from nl.carcharging.utils.EnergyUtil import EnergyUtil
+from nl.carcharging.utils.GenericUtil import GenericUtil
 
 GenericUtil.importGpio()
 GenericUtil.importMfrc522()
@@ -86,8 +83,9 @@ class LedLightHandler(Service):
             self.ledlighter.error()
 
     def start_evse_reader_loop_in_thread(self):
-        thread_for_evse_reader = threading.Thread(target=self.evse_reader.loop, name="Read evse state", args=(self.got_sigterm,
-                                                                                                              lambda evse_state: self.try_handle_charging(evse_state)))
+        thread_for_evse_reader = threading.Thread(target=self.evse_reader.loop, name="Read evse state",
+                                                  args=(self.got_sigterm,
+                                                        lambda evse_state: self.try_handle_charging(evse_state)))
         thread_for_evse_reader.start()
 
     def authorize(self, rfid):
@@ -155,7 +153,7 @@ class LedLightHandler(Service):
             self.logger.info("Stopping RfidReader")
             self.stop()
 
-    def is_other_pending_session(self, last_saved_session, rfid):
+    def is_other_session_active(self, last_saved_session, rfid):
         return last_saved_session and not last_saved_session.end_value \
                and last_saved_session.rfid != str(rfid)
 
@@ -181,7 +179,7 @@ class LedLightHandler(Service):
 
             # If there is an open session for another rfid, raise error.
             last_saved_session = ChargeSessionModel.get_latest_charge_session(device)
-            if self.is_other_pending_session(last_saved_session, rfid):
+            if self.is_other_session_active(last_saved_session, rfid):
                 raise OtherRfidHasOpenSessionException(
                     "Rfid %s was offered but rfid %s has an open session" % (rfid, last_saved_session.rfid))
 
@@ -230,17 +228,6 @@ class LedLightHandler(Service):
                 self.logger.debug("Charging is stopped")
                 if self.ledlighter.is_charging_light_on():
                     self.ledlighter.back_to_previous_light()
-
-    def is_car_charging(self, device):
-        last_two_measures = EnergyDeviceMeasureModel().get_last_n_saved(device, 2)
-        diff_last_two_measures_saved = last_two_measures[0].created_at - last_two_measures[1].created_at
-        # Get dummy measure to get current datetime (to sure the datetime is calculated consistently)
-        # which we can use to see if charging is going on.
-        current_date_time = EnergyDeviceMeasureModel()
-        current_date_time.set({})
-        diff_now_and_last_saved_session = current_date_time.created_at - last_two_measures[0].created_at
-        return diff_now_and_last_saved_session.seconds <= MAX_SECONDS_INTERVAL_CHARGING \
-               and diff_last_two_measures_saved.seconds <= MAX_SECONDS_INTERVAL_CHARGING
 
     def buzz_ok(self):
         self.buzzer.buzz_other_thread(.1, 1)
